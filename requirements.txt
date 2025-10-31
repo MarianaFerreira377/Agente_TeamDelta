@@ -1,0 +1,11 @@
+openai
+langchain_community
+langchain_anthropic
+langchain-tavily
+langchain_experimental
+langchain_openai
+langgraph
+duckduckgo-search
+ddgs
+matplotlib
+seaborn
