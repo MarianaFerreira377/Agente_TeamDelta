@@ -9,28 +9,19 @@ from langchain_tavily import TavilySearch
 from langchain_core.tools import tool
 
 
-TAVILY_KEY = "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"
-
+# Configuração do Tavily usando variável de ambiente TAVILY_API_KEY
 try:
-    
-    tavily_tool = TavilySearch(max_results=5, tavily_api_key=TAVILY_KEY)
+    tavily_tool = TavilySearch(max_results=5)
     print("✓ Tavily configurado com sucesso")
-except Exception as e1:
-    try:
-        # Se falhar, usa variável de ambiente
-        os.environ["TAVILY_API_KEY"] = TAVILY_KEY
-        tavily_tool = TavilySearch(max_results=5)
-        print("✓ Tavily configurado via variável de ambiente")
-    except Exception as e2:
-        # SE TAVILY NÃO DISPONÍVEL, LANÇA EXCEÇÃO PARA QUEBRAR O CÓDIGO
-        print(f"\n❌ ERRO CRÍTICO: Tavily não disponível!")
-        print(f"Erro 1: {e1}")
-        print(f"Erro 2: {e2}")
-        print("\nTavily é obrigatório para o sistema funcionar.")
-        print("Verifique a configuração da API key.\n")
-        raise RuntimeError(
-            "Tavily não pode ser configurado. Sistema não pode funcionar sem ele."
-        ) from e2
+except Exception as e:
+    # SE TAVILY NÃO DISPONÍVEL, LANÇA EXCEÇÃO PARA QUEBRAR O CÓDIGO
+    print(f"\n❌ ERRO CRÍTICO: Tavily não disponível!")
+    print(f"Erro: {e}")
+    print("\nTavily é obrigatório para o sistema funcionar.")
+    print("Configure a variável de ambiente TAVILY_API_KEY.\n")
+    raise RuntimeError(
+        "Tavily não pode ser configurado. Sistema não pode funcionar sem ele."
+    ) from e
 
 
 class PythonREPL:
