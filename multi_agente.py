@@ -27,44 +27,12 @@ class DecisaoCoordenador(BaseModel):
     destino: Literal["economia", "clima"] = Field(
         description="Destino do fluxo: economia ou clima"
     )
+    tipo_tarefa: Literal["pesquisa", "grafico"] = Field(
+        description="Tipo de tarefa: pesquisa simples ou geração de gráfico"
+    )
     razao: str = Field(
         description="Razão breve da decisão"
     )
-
-
-# ============================================================================
-# CONFIGURAÇÕES
-# ============================================================================
-
-TOKEN = os.environ.get("GITHUB_TOKEN", "")
-ENDPOINT = "https://models.github.ai/inference"
-MODEL = "openai/gpt-4o-mini"
-
-# Inicializar o LLM
-llm = ChatOpenAI(
-    model=MODEL,
-    base_url=ENDPOINT,
-    api_key=TOKEN,
-    temperature=0
-)
-
-# Parser estruturado para o coordenador
-parser_coordenador = PydanticOutputParser(pydantic_object=DecisaoCoordenador)
-
-# Template do prompt do coordenador com instruções de JSON
-prompt_coordenador_template = ChatPromptTemplate.from_messages([
-    ("system", """Você é um COORDENADOR de um sistema multi-agente especializado em dados de cidades brasileiras.
-Sua função é analisar a consulta do usuário e determinar qual agente especializado deve processar.
-
-AGENTES DISPONÍVEIS:
-- economia: para perguntas sobre PIB, desemprego, IDH, inflação, salário, economia
-- clima: para perguntas sobre temperatura, chuva, precipitação, umidade, meteorologia, condições do tempo
-
-IMPORTANTE: Responda APENAS no formato JSON especificado.
-
-{format_instructions}"""),
-    ("human", "{consulta}")
-])
 
 
 # ============================================================================
@@ -76,111 +44,172 @@ class EstadoEconomia(MessagesState):
     cidade: str = ""
     tipo_tarefa: str = ""  # "pesquisa" ou "grafico"
     ultima_cidade_processada: str = ""  # Para memória curta entre consultas
-    
+    decisao_destino: str = ""  # Decisão do coordenador armazenada no estado
+
 
 # ============================================================================
-# NÓS (AGENTES)
+# CONFIGURAÇÕES GLOBAIS (podem ser injetadas)
 # ============================================================================
 
-def no_coordenador(state: EstadoEconomia) -> dict:
+TOKEN = os.environ.get("GITHUB_TOKEN", "")
+ENDPOINT = "https://models.github.ai/inference"
+MODEL = "openai/gpt-4o-mini"
+
+
+# ============================================================================
+# NÓS (AGENTES) - AGORA SÃO FUNÇÕES QUE RECEBEM LLM
+# ============================================================================
+
+def criar_no_coordenador(llm):
     """
-    Nó do coordenador: decide qual agente deve processar a consulta.
-    Retorna decisão estruturada via PydanticOutputParser.
+    Cria o nó do coordenador.
+    Agora retorna função que usa o llm injetado.
     """
-    print("\n[COORDENADOR] Analisando consulta...")
+    # Parser estruturado para o coordenador
+    parser_coordenador = PydanticOutputParser(pydantic_object=DecisaoCoordenador)
     
-    # Extrai a última pergunta do usuário
-    mensagens = state.get("messages", [])
-    consulta_usuario = ""
-    for msg in reversed(mensagens):
-        if isinstance(msg, HumanMessage):
-            consulta_usuario = msg.content
-            break
+    # Template do prompt do coordenador
+    prompt_coordenador_template = ChatPromptTemplate.from_messages([
+        ("system", """Você é um COORDENADOR de um sistema multi-agente especializado em dados de cidades brasileiras.
+
+Sua função é analisar a consulta do usuário e determinar:
+1. Qual agente especializado deve processar (economia ou clima)
+2. Se a consulta pede uma simples pesquisa ou geração de gráfico
+
+AGENTES DISPONÍVEIS:
+- economia: para perguntas sobre PIB, desemprego, IDH, inflação, salário, economia
+- clima: para perguntas sobre temperatura, chuva, precipitação, umidade, meteorologia, condições do tempo
+
+TIPOS DE TAREFA:
+- pesquisa: quando apenas pergunta por dados/informações
+- grafico: quando solicita gráficos, visualizações, charts, etc.
+
+IMPORTANTE: Responda APENAS no formato JSON especificado.
+
+{format_instructions}"""),
+        ("human", "{consulta}")
+    ])
     
-    if not consulta_usuario:
-        # Fallback
-        resultado_decisa = {"destino": "economia", "razao": "Consulta vazia"}
-    else:
-        # Invoca o LLM com prompt estruturado
-        formato_instrucoes = parser_coordenador.get_format_instructions()
-        chain = prompt_coordenador_template | llm | parser_coordenador
+    def no_coordenador(state: EstadoEconomia) -> dict:
+        """
+        Nó do coordenador: decide qual agente e tipo de tarefa.
+        Guarda decisão no estado, não nas mensagens.
+        """
+        print("\n[COORDENADOR] Analisando consulta...")
         
-        try:
-            decisao = chain.invoke({
-                "consulta": consulta_usuario,
-                "format_instructions": formato_instrucoes
-            })
-            resultado_decisa = {"destino": decisao.destino, "razao": decisao.razao}
-        except Exception as e:
-            print(f"[COORDENADOR] Erro no parsing: {e}")
-            resultado_decisa = {"destino": "economia", "razao": "Erro no parsing"}
+        # Extrai a última pergunta do usuário
+        mensagens = state.get("messages", [])
+        consulta_usuario = ""
+        for msg in reversed(mensagens):
+            if isinstance(msg, HumanMessage):
+                consulta_usuario = msg.content
+                break
+        
+        if not consulta_usuario:
+            destino = "economia"
+            tipo_tarefa = "pesquisa"
+            razao = "Consulta vazia"
+        else:
+            # Invoca o LLM com prompt estruturado
+            formato_instrucoes = parser_coordenador.get_format_instructions()
+            chain = prompt_coordenador_template | llm | parser_coordenador
+            
+            try:
+                decisao = chain.invoke({
+                    "consulta": consulta_usuario,
+                    "format_instructions": formato_instrucoes
+                })
+                destino = decisao.destino
+                tipo_tarefa = decisao.tipo_tarefa
+                razao = decisao.razao
+            except Exception as e:
+                print(f"[COORDENADOR] Erro no parsing: {e}")
+                destino = "economia"
+                tipo_tarefa = "pesquisa"
+                razao = "Erro no parsing"
+        
+        print(f"[COORDENADOR] Decisao: {destino} - {tipo_tarefa} | {razao}")
+        
+        # Guarda decisão NO ESTADO, não nas mensagens
+        # Retorna estado completo com decisão
+        estado_atualizado = {
+            **state,  # Mantém tudo do estado anterior
+            "decisao_destino": destino,
+            "tipo_tarefa": tipo_tarefa
+        }
+        
+        return estado_atualizado
     
-    print(f"[COORDENADOR] Decisao: {resultado_decisa['destino']} - {resultado_decisa['razao']}")
-    
-    # Adiciona mensagem com a decisão estruturada
-    nova_mensagem = AIMessage(content=json.dumps(resultado_decisa))
-    estado_atualizado = {"messages": state["messages"] + [nova_mensagem]}
-    
-    return estado_atualizado
+    return no_coordenador
 
 
-# Criação dos agentes de pesquisa e gráficos
-agente_economia = create_react_agent(
-    llm,
-    tools=[tavily_tool, get_current_date],
-    prompt=criar_prompt_economia(),
-)
-
-agente_clima = create_react_agent(
-    llm,
-    tools=[tavily_tool, get_current_date],
-    prompt=criar_prompt_clima(),
-)
-
-agente_graficos = create_react_agent(
-    llm,
-    tools=[python_repl_tool],
-    prompt=criar_prompt_graficos(),
-)
-
-
-def no_economia(state: EstadoEconomia) -> dict:
-    """Nó do agente de economia: pesquisa dados econômicos."""
-    print("[ECONOMIA] Buscando dados econômicos...")
+def criar_no_economia(llm):
+    """Cria o nó do agente de economia."""
+    agente = create_react_agent(
+        llm,
+        tools=[tavily_tool, get_current_date],
+        prompt=criar_prompt_economia(),
+    )
     
-    resultado = agente_economia.invoke(state)
+    def no_economia(state: EstadoEconomia) -> dict:
+        """Nó do agente de economia: pesquisa dados econômicos."""
+        print("[ECONOMIA] Buscando dados econômicos...")
+        
+        resultado = agente.invoke(state)
+        
+        # Identifica a cidade mencionada
+        cidade = extrair_cidade(state.get("messages", []))
+        if cidade:
+            resultado["cidade"] = cidade
+            resultado["ultima_cidade_processada"] = cidade
+        
+        return resultado
     
-    # Identifica a cidade mencionada
-    cidade = extrair_cidade(state.get("messages", []))
-    if cidade:
-        resultado["cidade"] = cidade
-        resultado["ultima_cidade_processada"] = cidade
-    
-    return resultado
+    return no_economia
 
 
-def no_clima(state: EstadoEconomia) -> dict:
-    """Nó do agente de clima: pesquisa dados climáticos."""
-    print("[CLIMA] Buscando dados climáticos...")
+def criar_no_clima(llm):
+    """Cria o nó do agente de clima."""
+    agente = create_react_agent(
+        llm,
+        tools=[tavily_tool, get_current_date],
+        prompt=criar_prompt_clima(),
+    )
     
-    resultado = agente_clima.invoke(state)
+    def no_clima(state: EstadoEconomia) -> dict:
+        """Nó do agente de clima: pesquisa dados climáticos."""
+        print("[CLIMA] Buscando dados climáticos...")
+        
+        resultado = agente.invoke(state)
+        
+        # Identifica a cidade mencionada
+        cidade = extrair_cidade(state.get("messages", []))
+        if cidade:
+            resultado["cidade"] = cidade
+            resultado["ultima_cidade_processada"] = cidade
+        
+        return resultado
     
-    # Identifica a cidade mencionada
-    cidade = extrair_cidade(state.get("messages", []))
-    if cidade:
-        resultado["cidade"] = cidade
-        resultado["ultima_cidade_processada"] = cidade
-    
-    return resultado
+    return no_clima
 
 
-def no_graficos(state: EstadoEconomia) -> dict:
-    """Nó do agente de gráficos: gera visualizações."""
-    print("[GRAFICOS] Gerando visualização...")
+def criar_no_graficos(llm):
+    """Cria o nó do agente de gráficos."""
+    agente = create_react_agent(
+        llm,
+        tools=[python_repl_tool],
+        prompt=criar_prompt_graficos(),
+    )
     
-    resultado = agente_graficos.invoke(state)
+    def no_graficos(state: EstadoEconomia) -> dict:
+        """Nó do agente de gráficos: gera visualizações."""
+        print("[GRAFICOS] Gerando visualização...")
+        
+        resultado = agente.invoke(state)
+        
+        return resultado
     
-    return resultado
+    return no_graficos
 
 
 # ============================================================================
@@ -189,26 +218,18 @@ def no_graficos(state: EstadoEconomia) -> dict:
 
 def roteador_coordenador(state: EstadoEconomia) -> Literal["economia", "clima", END]:
     """
-    Roteador após o coordenador: lê a decisão JSON estruturada.
+    Roteador após o coordenador: lê a decisão do estado.
+    Não precisa parsear mensagens, lê direto do estado.
     """
+    destino = state.get("decisao_destino", "")
+    
+    if destino == "clima":
+        return "clima"
+    elif destino == "economia":
+        return "economia"
+    
+    # Fallback: keywords se estado vazio
     mensagens = state.get("messages", [])
-    if not mensagens:
-        return END
-    
-    # Procura pela última AIMessage do coordenador com decisão JSON
-    for msg in reversed(mensagens):
-        if isinstance(msg, AIMessage):
-            try:
-                decisao_dict = json.loads(msg.content)
-                destino = decisao_dict.get("destino", "economia")
-                if destino == "clima":
-                    return "clima"
-                elif destino == "economia":
-                    return "economia"
-            except (json.JSONDecodeError, AttributeError):
-                continue
-    
-    # Fallback para keywords se JSON não encontrado
     for msg in mensagens:
         if isinstance(msg, HumanMessage):
             pergunta_original = msg.content.lower()
@@ -227,12 +248,14 @@ def roteador_coordenador(state: EstadoEconomia) -> Literal["economia", "clima", 
 
 
 def roteador_economia(state: EstadoEconomia) -> Literal["graficos", END]:
-    """Roteador após economia: decide se deve gerar gráfico ou finalizar."""
-    mensagens = state.get("messages", [])
-    if not mensagens:
-        return END
+    """Roteador após economia: lê tipo_tarefa do estado."""
+    tipo_tarefa = state.get("tipo_tarefa", "")
     
-    # Verifica se a tarefa original incluía gerar gráfico
+    if tipo_tarefa == "grafico":
+        return "graficos"
+    
+    # Fallback: keywords se estado vazio
+    mensagens = state.get("messages", [])
     for msg in mensagens:
         if isinstance(msg, HumanMessage):
             tarefa_original = msg.content.lower()
@@ -251,12 +274,14 @@ def roteador_economia(state: EstadoEconomia) -> Literal["graficos", END]:
 
 
 def roteador_clima(state: EstadoEconomia) -> Literal["graficos", END]:
-    """Roteador após clima: decide se deve gerar gráfico ou finalizar."""
-    mensagens = state.get("messages", [])
-    if not mensagens:
-        return END
+    """Roteador após clima: lê tipo_tarefa do estado."""
+    tipo_tarefa = state.get("tipo_tarefa", "")
     
-    # Verifica se a tarefa original incluía gerar gráfico
+    if tipo_tarefa == "grafico":
+        return "graficos"
+    
+    # Fallback: keywords se estado vazio
+    mensagens = state.get("messages", [])
     for msg in mensagens:
         if isinstance(msg, HumanMessage):
             tarefa_original = msg.content.lower()
@@ -305,18 +330,43 @@ def extrair_cidade(mensagens: List) -> str:
 
 
 # ============================================================================
-# CONSTRUÇÃO DO GRAFO
+# CONSTRUÇÃO DO GRAFO (AGORA RECEBE PARÂMETROS)
 # ============================================================================
 
-def criar_grafo():
-    """Constrói o grafo de estados do sistema multi-agente."""
+def criar_grafo(llm=None, exibir_processo: bool = False):
+    """
+    Constrói o grafo de estados do sistema multi-agente.
+    
+    Args:
+        llm: Instância do LLM (se None, cria uma nova)
+        exibir_processo: Se True, mostra streaming do fluxo
+    
+    Returns:
+        Grafo compilado
+    """
+    # Cria LLM se não fornecido
+    if llm is None:
+        llm = ChatOpenAI(
+            model=MODEL,
+            base_url=ENDPOINT,
+            api_key=TOKEN,
+            temperature=0
+        )
+    
+    # Cria os nós usando o llm
+    no_coordenador_fn = criar_no_coordenador(llm)
+    no_economia_fn = criar_no_economia(llm)
+    no_clima_fn = criar_no_clima(llm)
+    no_graficos_fn = criar_no_graficos(llm)
+    
+    # Constrói o grafo
     workflow = StateGraph(EstadoEconomia)
     
-    # Adiciona os nós (agentes)
-    workflow.add_node("coordenador", no_coordenador)
-    workflow.add_node("economia", no_economia)
-    workflow.add_node("clima", no_clima)
-    workflow.add_node("graficos", no_graficos)
+    # Adiciona os nós
+    workflow.add_node("coordenador", no_coordenador_fn)
+    workflow.add_node("economia", no_economia_fn)
+    workflow.add_node("clima", no_clima_fn)
+    workflow.add_node("graficos", no_graficos_fn)
     
     # Define o ponto de entrada
     workflow.add_edge(START, "coordenador")
@@ -352,18 +402,21 @@ def criar_grafo():
 
 
 # ============================================================================
-# EXECUÇÃO
+# EXECUÇÃO COM STREAMING OPCIONAL
 # ============================================================================
 
 def executar_consulta(consulta: str, grafo, estado_anterior=None, exibir_processo: bool = False):
     """
-    Executa uma consulta com suporte a memória curta para consultas sequenciais.
+    Executa uma consulta com suporte a memória curta e streaming opcional.
     
     Args:
         consulta: Pergunta do usuário
         grafo: Grafo compilado
         estado_anterior: Estado anterior (para memória curta)
-        exibir_processo: Se True, mostra debug do fluxo
+        exibir_processo: Se True, mostra streaming do fluxo
+    
+    Returns:
+        Tupla (resultado, novo_estado)
     """
     # Memória curta: se consulta não menciona cidade mas última tem cidade
     consulta_modificada = consulta
@@ -384,7 +437,7 @@ def executar_consulta(consulta: str, grafo, estado_anterior=None, exibir_process
         {"recursion_limit": 25}
     )
     
-    # Processa eventos com debug visual
+    # Processa eventos com debug visual se solicitado
     resultado_final = None
     for evento in eventos:
         if exibir_processo:
@@ -416,6 +469,10 @@ def executar_consulta(consulta: str, grafo, estado_anterior=None, exibir_process
     return resultado_final, novo_estado
 
 
+# ============================================================================
+# MAIN
+# ============================================================================
+
 def main():
     """Função principal com loop interativo."""
     print("\n" + "="*80)
@@ -423,6 +480,7 @@ def main():
     print("Economia e Clima")
     print("="*80)
     
+    # Cria o grafo (agora modular e testável)
     grafo = criar_grafo()
     estado_atual = None
     
@@ -430,7 +488,8 @@ def main():
     print("  - Qual e o PIB de Sao Paulo?")
     print("  - Qual a temperatura em Florianopolis?")
     print("  - Mostre um grafico do desemprego em Campinas")
-    print("\nDigite 'sair' para encerrar\n")
+    print("\nDigite 'sair' para encerrar")
+    print("Digite 'debug' para exibir fluxo completo\n")
     
     while True:
         try:
@@ -439,6 +498,31 @@ def main():
             if consulta.lower() in ['sair', 'exit', 'quit', 'q']:
                 print("\nEncerrando sistema...\n")
                 break
+            
+            # Comando especial para debug
+            if consulta.lower() == 'debug':
+                print("\n[DEBUG] Modo debug ativado. Digite sua consulta:")
+                consulta_debug = input("Consulta: ").strip()
+                if consulta_debug:
+                    resultado, estado_atual = executar_consulta(
+                        consulta_debug, 
+                        grafo, 
+                        estado_atual,
+                        exibir_processo=True  # Ativa streaming
+                    )
+                    # Exibe resposta
+                    if resultado:
+                        for node_name, node_data in resultado.items():
+                            if "messages" in node_data:
+                                ultima_msg = node_data["messages"][-1]
+                                if hasattr(ultima_msg, 'content'):
+                                    print(f"\n{'='*80}")
+                                    print("RESPOSTA FINAL:")
+                                    print('='*80)
+                                    print(ultima_msg.content)
+                                    print('='*80)
+                print()
+                continue
             
             if not consulta:
                 print("Por favor, digite uma consulta valida.\n")
