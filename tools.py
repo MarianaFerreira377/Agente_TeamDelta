@@ -4,12 +4,15 @@ import os
 from contextlib import redirect_stdout
 from typing import Annotated
 from datetime import datetime
+from dotenv import load_dotenv
 
 from langchain_tavily import TavilySearch
 from langchain_core.tools import tool
 
+# Carrega variáveis de ambiente de arquivo .env se existir
+load_dotenv()
 
-# Configuração do Tavily usando variável de ambiente TAVILY_API_KEY
+# Configuração do Tavily
 try:
     tavily_tool = TavilySearch(max_results=5)
     print("✓ Tavily configurado com sucesso")
@@ -18,7 +21,8 @@ except Exception as e:
     print(f"\n❌ ERRO CRÍTICO: Tavily não disponível!")
     print(f"Erro: {e}")
     print("\nTavily é obrigatório para o sistema funcionar.")
-    print("Configure a variável de ambiente TAVILY_API_KEY.\n")
+    print("Configure a variável de ambiente TAVILY_API_KEY.")
+    print("Ou crie arquivo .env com: TAVILY_API_KEY=sua_chave\n")
     raise RuntimeError(
         "Tavily não pode ser configurado. Sistema não pode funcionar sem ele."
     ) from e
