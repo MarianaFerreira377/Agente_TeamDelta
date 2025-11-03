@@ -75,7 +75,8 @@ def no_coordenador(state: EstadoEconomia) -> dict:
     if resultado.get("messages"):
         ultima_msg = resultado["messages"][-1]
         if hasattr(ultima_msg, 'content'):
-            print(f"[COORDENADOR] Decisao: {ultima_msg.content}")
+            decisao = ultima_msg.content.strip().lower()
+            print(f"[COORDENADOR] Decisao: {decisao}")
     print()  # Linha em branco para separar
     
     return resultado
@@ -99,10 +100,7 @@ def no_economia(state: EstadoEconomia) -> dict:
 
 
 def no_clima(state: EstadoEconomia) -> dict:
-    """
-    Nó do agente de clima: pesquisa dados climáticos da cidade.
-    Busca informações atuais e históricas (até 5 anos) sobre clima e meteorologia.
-    """
+   
     print("[CLIMA] Buscando dados climáticos...")
     
     resultado = agente_clima.invoke(state)
@@ -129,39 +127,41 @@ def no_graficos(state: EstadoEconomia) -> dict:
 
 def roteador_coordenador(state: EstadoEconomia) -> Literal["economia", "clima", END]:
     """
-    Roteador após o coordenador: decide para qual agente especializado ir.
-    Detecta se a pergunta é sobre economia ou clima.
+    Roteador após o coordenador: usa a decisão do coordenador para direcionar.
+    Lê a resposta do coordenador e direciona baseado nela.
     """
     mensagens = state.get("messages", [])
     if not mensagens:
         return END
     
-    # Pega a pergunta original do usuário
+    # Procura pela última AIMessage do coordenador
+    decisao_coordenador = None
+    for msg in reversed(mensagens):
+        if hasattr(msg, 'content') and hasattr(msg, '__class__'):
+            if msg.__class__.__name__ == 'AIMessage':
+                decisao_coordenador = msg.content.strip().lower()
+                break
+    
+    # Usa a decisão do coordenador
+    if decisao_coordenador:
+        if "clima" in decisao_coordenador:
+            return "clima"
+        elif "economia" in decisao_coordenador:
+            return "economia"
+    
+    # Fallback: palavras-chave se coordenador não retornou formato esperado
     pergunta_original = ""
     for msg in mensagens:
         if hasattr(msg, 'content') and isinstance(msg, HumanMessage):
             pergunta_original = msg.content.lower()
             break
     
-    # Palavras-chave para clima
-    palavras_clima = [
-        "temperatura", "clima", "chuva", "precipitação", "umidade",
-        "meteorologia", "previsão", "tempo", "estações", "verão", "inverno"
-    ]
+    palavras_clima = ["temperatura", "clima", "chuva", "precipitação", "umidade", "meteorologia"]
+    palavras_economia = ["pib", "desemprego", "idh", "inflação", "salário", "economia"]
     
-    # Palavras-chave para economia
-    palavras_economia = [
-        "pib", "desemprego", "idh", "inflação", "salário", 
-        "economia", "renda", "produto interno bruto"
-    ]
-    
-    # Detecta tipo de pergunta
-    pergunta_sobre_clima = any(palavra in pergunta_original for palavra in palavras_clima)
-    pergunta_sobre_economia = any(palavra in pergunta_original for palavra in palavras_economia)
-    
-    if pergunta_sobre_clima:
+    if any(palavra in pergunta_original for palavra in palavras_clima):
         return "clima"
-    elif pergunta_sobre_economia:
+    elif any(palavra in pergunta_original for palavra in palavras_economia):
         return "economia"
     
     # Default: economia
@@ -361,19 +361,14 @@ def executar_consulta(consulta: str, grafo, estado_anterior=None, exibir_process
 
 
 def main():
-    """
-    Função principal para executar consultas interativas sobre dados de cidades brasileiras.
-    """
+  
     print("\n" + "="*80)
     print("SISTEMA MULTI-AGENTE PARA DADOS DE CIDADES BRASILEIRAS")
     print("Economia e Clima")
     print("="*80)
-    print("ESSE AGENTE NÃO É CAPAZ DE GUARDAR O CONTEXTO ENTRE CONSULTAS.")
     
-   
     grafo = criar_grafo()
     
-  
     print("\nDigite 'sair' para encerrar\n")
     
     while True:
@@ -388,7 +383,6 @@ def main():
                 print("Por favor, digite uma consulta valida.\n")
                 continue
             
-            # Executa a consulta (cada consulta é independente, sem histórico)
             resultado, _ = executar_consulta(
                 consulta, 
                 grafo, 
@@ -408,7 +402,7 @@ def main():
                             print(ultima_msg.content)
                             print('='*80)
             
-            print()  # Linha em branco entre consultas
+            print() 
             
         except KeyboardInterrupt:
             print("\n\nEncerrando sistema...\n")
