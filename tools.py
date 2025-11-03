@@ -15,7 +15,7 @@ load_dotenv()
 # Configuração do Tavily
 try:
     tavily_tool = TavilySearch(max_results=5)
-    print("✓ Tavily configurado com sucesso")
+   
 except Exception as e:
     # SE TAVILY NÃO DISPONÍVEL, LANÇA EXCEÇÃO PARA QUEBRAR O CÓDIGO
     print(f"\n❌ ERRO CRÍTICO: Tavily não disponível!")

@@ -153,6 +153,7 @@ IMPORTANTE:
 - Se não receber dados suficientes nas mensagens anteriores, INFORME que não há dados suficientes e peça mais informações
 - Use dados reais APENAS quando disponíveis nas mensagens anteriores
 - NUNCA invente dados para completar gráficos
+- SEMPRE salve o arquivo com plt.savefig() e informe o nome do arquivo salvo com print()
 - Sempre finalize com "FINAL ANSWER" após salvar o gráfico
 - O gráfico deve representar dados de no máximo 5 anos
 - Se faltarem dados, explique ao usuário o que está faltando

@@ -1,208 +1,79 @@
-# Implementação do Sistema Multi-Agente
+# Arquitetura do Sistema de Agentes em LangGraph (Versão Integrada)
 
-## Como Funciona a Máquina de Estados
-
-### O que é o Estado?
-
-O estado basicamente guarda todas as informações que o sistema precisa lembrar durante a execução:
-
-```python
-class EstadoEconomia(MessagesState):
-    messages: List[Message]  # Histórico de mensagens
-    cidade: str = ""         # Cidade extraída
-    tipo_tarefa: str = ""    # "pesquisa" ou "grafico"
-    ultima_cidade_processada: str = ""  # Para memória curta
-```
-
-**messages**: É tipo um histórico da conversa. Quando você faz uma pergunta, cria uma HumanMessage. Quando um agente responde, cria uma AIMessage. Quando uma ferramenta é usada, cria uma ToolMessage. Todas ficam aqui.  
-**cidade**: Quando a gente extrai qual cidade você mencionou, salva aqui.  
-**tipo_tarefa**: Diz se é só pesquisa ou se precisa gerar gráfico também.  
-**ultima_cidade_processada**: Guarda a última cidade pra usar na próxima consulta se você não mencionar uma nova.
-
-### Como Identificamos Cidades?
-
-A gente criou uma lista fixa com as principais cidades brasileiras e faz um matching simples:
-
-```python
-cidades = [
-    "são paulo", "rio de janeiro", "belo horizonte", "brasília",
-    "salvador", "fortaleza", "curitiba", "recife", "porto alegre",
-    "goiânia", "belém", "guarulhos", "campinas", "são luís",
-    "são gonçalo", "maceió", "duque de caxias", "natal",
-    "teresina", "campo grande", "nova iguaçu", "são bernardo",
-    "joão pessoa", "santo andré", "osasco", "jaboatão",
-    "são josé dos campos", "ribeirão preto", "uberlândia",
-    "contagem", "aracaju", "feira de santana", "cuiabá"
-]
-```
-
-A função `extrair_cidade()` pega sua pergunta, transforma tudo em minúsculas, e procura se alguma cidade dessa lista aparece no texto. Quando acha a primeira, retorna ela formatada bonitinho (primeira letra maiúscula).
-
-### Estrutura do Grafo
-
-O grafo é tipo um fluxograma. Tem os nós (que são os agentes trabalhando) e as setas entre eles (que são as decisões):
+O sistema é modelado como um Workflow Sequencial Condicional usando LangGraph sobre o EstadoEconomia. A arquitetura é projetada para rotear a consulta inicial para o agente de domínio correto antes de qualquer processamento:
 
 ```
-START → coordenador → [decide] → economia OU clima
-                                           ↓
-                                    [decide] → graficos OU END
-                                              ↓
-                                            END
+$$\text{START} \xrightarrow{\text{Fixa}} \text{coordenador} \xrightarrow{\text{Condicional}} \begin{cases} \text{"economia"} \rightarrow \text{economia} \\ \text{"clima"} \rightarrow \text{clima} \\ \text{END} \end{cases}$$
 ```
 
-**Nós**: São as funções `no_coordenador`, `no_economia`, `no_clima`, `no_graficos`. Cada uma recebe o estado atual, faz seu trabalho, e retorna o estado atualizado.  
-**Arestas fixas**: START sempre vai pro coordenador, não tem escolha.  
-**Arestas condicionais**: Aqui sim tem decisão. Usa uma função roteadora que retorna uma string dizendo qual é o próximo nó, ou retorna END pra parar.
+## 1. Estado da Máquina: EstadoEconomia
 
-### O Coordenador Decide de Verdade
+O estado é uma extensão de MessagesState, projetado para acumular o histórico de conversação e armazenar metadados cruciais para o roteamento e a memória de curto prazo:
 
-O coordenador é diferente agora. Ele não é só decoração - ele realmente decide o fluxo usando inteligência do LLM:
+| Campo | Função Principal |
+|-------|-----------------|
+| messages | Histórico completo acumulado (Entrada/Saída/Ferramenta). |
+| decisao_destino | Roteamento primário definido pelo Coordenador ("economia" ou "clima"). |
+| tipo_tarefa | Tipo de solicitação ("pesquisa" ou "grafico"), definido pelo Coordenador. |
+| ultima_cidade_processada | Usado para memória curta entre sessões. |
+| cidade | Cidade extraída pelo agente de domínio ativo. |
 
-```python
-class DecisaoCoordenador(BaseModel):
-    destino: Literal["economia", "clima"]
-    razao: str
-```
+## 2. Nó Coordenador: Roteamento Estruturado com Segurança
 
-O coordenador usa `PydanticOutputParser` pra garantir que retorna um JSON válido sempre. O prompt dele é bem específico: deve responder com JSON contendo "destino" e "razao". 
+Este nó é o ponto de inteligência primário, focado em converter a intenção livre do usuário em uma decisão determinística:
 
-Quando o LLM responde, o parser valida. Se estiver no formato certo, ótimo. Se não, cai no fallback (keywords).
+- **Decisão Forçada (Prioridade Máxima)**: Utiliza um chain LLM configurada com PydanticOutputParser, forçando o retorno de um JSON válido (DecisaoCoordenador) para preencher destino e tipo_tarefa.
 
-```python
-chain = prompt_coordenador_template | llm | parser_coordenador
-decisao = chain.invoke({"consulta": consulta_usuario, ...})
-```
+- **Roteador do Coordenador**: Verifica primeiro o campo decisao_destino. Em caso de falha, ele recorre a um Acompanhamento por Keyword (Fallback), analisando a consulta original para forçar o direcionamento ou seguir para END.
 
-Isso retorna um objeto Python válido com `destino` e `razao`. O roteador depois pega esse objeto e usa pra decidir pra onde mandar.
+## 3. Nós de Domínio: Pesquisa (Economia/Clima) e Extração de Entidades
 
-### Como os Roteadores Decidem?
+Estes nós utilizam o agente ReAct com ferramentas específicas.
 
-#### Roteador do Coordenador
+- **Execução**: Invocam o agente com o estado completo para contextualização.
 
-Esse roteador não usa mais keywords como principal. Ele lê o JSON que o coordenador retornou:
+- **Extração de Cidade**: Após a execução, o nó chama a função extrair_cidade, que realiza uma correspondência de texto fixa (keyword matching) contra uma lista interna de cidades brasileiras (em minúsculas). Se houver correspondência, a cidade é retornada em Title Case e salva em cidade e ultima_cidade_processada.
 
-```python
-for msg in reversed(mensagens):
-    if isinstance(msg, AIMessage):
-        decisao_dict = json.loads(msg.content)
-        destino = decisao_dict.get("destino", "economia")
-        if destino == "clima":
-            return "clima"
-        elif destino == "economia":
-            return "economia"
-```
+## 4. Nó de Gráficos: Execução de Código Isolada
 
-Ele procura a última AIMessage, tenta fazer parse de JSON, e pega o campo "destino". Se conseguir, usa isso. Se não conseguir (não é JSON válido), cai no fallback de keywords que fica embaixo.
+Este nó é ativado se o Coordenador ou os roteadores secundários sinalizarem a necessidade de visualização.
 
-Fallback de keywords: mesmo que antes, verifica palavras de clima vs economia.
+- **Agente**: ReAct configurado com a ferramenta python_repl_tool.
 
-#### Roteadores de Economia e Clima
+- **Isolamento de Código**: A ferramenta executa o código Python gerado pelo LLM usando exec() dentro de um namespace local isolado (self.locals), capturando a saída padrão (stdout) via redirect_stdout() para retornar o resultado ou o código gerado.
 
-Depois que o agente de pesquisa termina, precisa decidir: faz gráfico ou termina? Ele verifica se na pergunta original você pediu gráfico:
+## 5. Roteamento Secundário (Tipo de Tarefa)
 
-```python
-deve_gerar = (
-    "grafico" in tarefa or "gráfico" in tarefa or
-    "chart" in tarefa or "graph" in tarefa or
-    "visualizar" in tarefa or "histórico" in tarefa or
-    "mostre" in tarefa or "mostrar" in tarefa
-)
-```
+Os roteadores após os nós de domínio validam se o fluxo deve continuar para a visualização.
 
-Se achou alguma dessas palavras, vai pro gráficos. Senão, termina.
+- **Prioridade**: Confiam primariamente no tipo_tarefa preenchido pelo Coordenador.
 
-#### Roteador de Gráficos
+- **Fallback de Visualização**: Se o campo estiver vazio, eles usam um Acompanhamento por Keyword, escaneando a consulta original em busca de termos como "gráfico" ou "chart". O retorno é "graficos" ou END.
 
-Esse é simples: sempre termina depois de fazer o gráfico. Não tem condicional.
+## 6. Ferramentas Utilizadas (Tools)
 
-### Fluxo Completo Passo a Passo
+O sistema expande a capacidade do LLM com três ferramentas essenciais:
 
-**Exemplo 1**: "Qual o PIB de São Paulo?"
+- **tavily_tool**: Permite pesquisa de fatos e dados atuais na web (ex: PIB, previsão do tempo).
 
-1. Começa com START, estado só tem sua pergunta em HumanMessage
-2. No coordenador: o LLM analisa, gera JSON `{"destino": "economia", "razao": "PIB é dado econômico"}`, parser valida, retorna objeto Python
-3. Roteador coordenador: faz `json.loads()` da AIMessage, pega "destino": "economia", retorna `"economia"`
-4. No economia: o agente de economia pega ferramentas (data atual, busca web), pesquisa, extrai que é São Paulo, salva no estado
-5. Roteador economia: procura palavras de gráfico, não acha, retorna END
-6. Fim! Resposta final é o que o agente de economia disse
+- **get_current_date**: Fornece o timestamp exato da execução, crucial para contexto temporal em consultas.
 
-**Exemplo 2**: "Gráfico de temperatura no Rio últimos 5 anos"
+- **python_repl_tool**: Habilita a execução segura (isolada via namespace) de código Python, sendo vital para a geração de gráficos e cálculos complexos.
 
-1. Começa com pergunta
-2. No coordenador: LLM retorna `{"destino": "clima", "razao": "temperatura é dado climático"}`
-3. Roteador coordenador: lê JSON, pega "clima"
-4. No clima: pesquisa dados históricos, acha que é Rio de Janeiro, salva no estado
-5. Roteador clima: acha "Gráfico", vai pra gráficos
-6. No gráficos: pega os dados do clima, roda código Python com matplotlib, salva PNG
-7. Roteador gráficos: sempre retorna END
-8. Fim! Gráfico salvo e mensagem confirmando
+## 7. Execução, Memória e Saída Composta
 
-### Memória Curta Entre Consultas
+- **Streaming**: A execução usa grafo.stream() para acumular o estado passo a passo.
 
-Cada consulta ainda é independente pro fluxo principal, MAS agora tem uma memória curta específica pra cidade:
+- **Memória Curta**: A função executar_consulta injeta a ultima_cidade_processada na consulta atual se a nova entrada for ambígua.
 
-```python
-if estado_anterior and estado_anterior.get("ultima_cidade_processada"):
-    cidade_anterior = estado_anterior.get("ultima_cidade_processada", "")
-    cidade_atual = extrair_cidade([HumanMessage(content=consulta)])
-    if not cidade_atual and cidade_anterior:
-        consulta_modificada = f"{consulta} em {cidade_anterior}"
-```
+- **Saída Composta**: Em fluxos de gráfico, o sistema compõe a saída, exibindo a última AIMessage dos agentes de pesquisa (dados brutos) antes de mostrar o resultado final do nó graficos, garantindo transparência sobre os dados utilizados.
 
-Se você perguntou sobre São Paulo na primeira vez e depois perguntou "qual o PIB?" sem mencionar a cidade, o sistema automaticamente adiciona "em São Paulo" na sua pergunta.
+## 8. Limitações e Trade-offs Adotados
 
-Depois de cada consulta, o sistema extrai qual cidade foi processada e salva pra próxima:
+- **Recursão**: Limite fixo de 25 passos.
 
-```python
-for node_name, node_data in resultado_final.items():
-    if node_name in ["economia", "clima"]:
-        cidade_processada = node_data.get("cidade", "")
-        if cidade_processada:
-            novo_estado = {"ultima_cidade_processada": cidade_processada}
-```
+- **Segurança**: A execução de código via python_repl_tool não utiliza sandboxing externo.
 
-É uma memória curta porque só guarda a cidade, não todo o histórico. Evita problemas de token e deixa o sistema mais inteligente.
+- **Roteamento**: Dependência de fallback por regras/keywords em caso de falha do LLM estruturado.
 
-### Como o Grafo é Construído?
-
-A gente cria o grafo uma vez só quando o sistema inicializa:
-
-```python
-workflow = StateGraph(EstadoEconomia)
-workflow.add_node("coordenador", no_coordenador)
-workflow.add_node("economia", no_economia)
-workflow.add_node("clima", no_clima)
-workflow.add_node("graficos", no_graficos)
-
-workflow.add_edge(START, "coordenador")
-workflow.add_conditional_edges("coordenador", roteador_coordenador, {...})
-workflow.add_conditional_edges("economia", roteador_economia, {...})
-workflow.add_conditional_edges("clima", roteador_clima, {...})
-workflow.add_conditional_edges("graficos", roteador_graficos, {...})
-
-return workflow.compile()
-```
-
-O `compile()` transforma essa definição em uma máquina de estados que pode ser executada. A gente salva esse objeto e reutiliza pra todas as consultas - não precisa criar de novo toda vez, seria muito lento.
-
-### Detalhes Importantes
-
-**Matching de cidades**: Não importa se você escreve "São Paulo" ou "são paulo", a gente transforma tudo em minúsculas pra comparar. "Qual o PIB de São Paulo?" vira "qual o pib de são paulo?" na comparação, aí acha no vetor.
-
-**Default**: Quando os roteadores não sabem pra onde mandar, sempre mandam pra economia. É melhor ter uma resposta do que nenhuma.
-
-**Limite de recursão**: Tem um limite de 25 passos no grafo, senão se der algum loop infinito o sistema ia rodar pra sempre.
-
-**JSON estruturado**: O coordenador sempre retorna JSON. O `PydanticOutputParser` valida antes de passar pro roteador. Se o JSON não vier no formato certo, cai no fallback de keywords. É tipo dois níveis de decisão: inteligente primeiro, regras depois.
-
-### Casos Especiais
-
-**Pergunta vazia**: Se não tiver mensagens, os roteadores retornam END direto.
-
-**Cidade não encontrada**: Se não achar nenhuma cidade conhecida, o campo cidade fica vazio no estado. Os agentes ainda funcionam, só não sabem qual cidade você quis dizer.
-
-**Pergunta ambígua**: Se o coordenador não conseguir decidir ou o JSON vier errado, usa economia como padrão.
-
-**Ferramenta quebrada**: Se alguma ferramenta der erro, o agente recebe uma ToolMessage com o erro e pode tentar de novo ou avisar que deu problema.
-
-**Memória curta**: Se você perguntou sobre uma cidade antes e a consulta nova não tem cidade, o sistema assume que é da mesma cidade. Funciona pra sequências tipo "qual a temperatura em SP?" depois "e o PIB?"
+- **Memória**: A persistência é limitada à cidade da consulta imediatamente anterior.

@@ -438,14 +438,19 @@ def executar_consulta(consulta: str, grafo, estado_anterior=None, exibir_process
     )
     
     # Processa eventos com debug visual se solicitado
-    resultado_final = None
+    todos_eventos = {}
     for evento in eventos:
         if exibir_processo:
             # Debug visual do fluxo
             for node_name, node_data in evento.items():
                 if node_name in ["coordenador", "economia", "clima", "graficos"]:
                     print(f"  → {node_name.upper()}")
-        resultado_final = evento
+        # Acumula todos os eventos por nome do nó
+        for node_name, node_data in evento.items():
+            todos_eventos[node_name] = node_data
+    
+    # O último evento já tem o estado completo com todas as mensagens acumuladas
+    resultado_final = todos_eventos
     
     # Retorna resultado e estado para próxima consulta (memória curta)
     novo_estado = None
@@ -484,12 +489,6 @@ def main():
     grafo = criar_grafo()
     estado_atual = None
     
-    print("\nExemplos:")
-    print("  - Qual e o PIB de Sao Paulo?")
-    print("  - Qual a temperatura em Florianopolis?")
-    print("  - Mostre um grafico do desemprego em Campinas")
-    print("\nDigite 'sair' para encerrar")
-    print("Digite 'debug' para exibir fluxo completo\n")
     
     while True:
         try:
@@ -498,31 +497,6 @@ def main():
             if consulta.lower() in ['sair', 'exit', 'quit', 'q']:
                 print("\nEncerrando sistema...\n")
                 break
-            
-            # Comando especial para debug
-            if consulta.lower() == 'debug':
-                print("\n[DEBUG] Modo debug ativado. Digite sua consulta:")
-                consulta_debug = input("Consulta: ").strip()
-                if consulta_debug:
-                    resultado, estado_atual = executar_consulta(
-                        consulta_debug, 
-                        grafo, 
-                        estado_atual,
-                        exibir_processo=True  # Ativa streaming
-                    )
-                    # Exibe resposta
-                    if resultado:
-                        for node_name, node_data in resultado.items():
-                            if "messages" in node_data:
-                                ultima_msg = node_data["messages"][-1]
-                                if hasattr(ultima_msg, 'content'):
-                                    print(f"\n{'='*80}")
-                                    print("RESPOSTA FINAL:")
-                                    print('='*80)
-                                    print(ultima_msg.content)
-                                    print('='*80)
-                print()
-                continue
             
             if not consulta:
                 print("Por favor, digite uma consulta valida.\n")
@@ -536,17 +510,55 @@ def main():
                 exibir_processo=False
             )
             
-            # Exibe apenas a resposta final
+            # Exibe a resposta final (com dados da pesquisa se houver gráfico)
             if resultado:
-                for node_name, node_data in resultado.items():
-                    if "messages" in node_data:
-                        ultima_msg = node_data["messages"][-1]
-                        if hasattr(ultima_msg, 'content'):
-                            print(f"\n{'='*80}")
-                            print("RESPOSTA FINAL:")
-                            print('='*80)
-                            print(ultima_msg.content)
-                            print('='*80)
+                # Verifica se há nó de gráficos
+                tem_grafico = "graficos" in resultado
+                
+                # Se tem gráfico, inclui dados da pesquisa
+                if tem_grafico:
+                    # Busca dados da pesquisa (economia ou clima)
+                    dados_pesquisa = None
+                    for node_name in ["economia", "clima"]:
+                        if node_name in resultado and "messages" in resultado[node_name]:
+                            node_data = resultado[node_name]
+                            # Pega a última mensagem do agente de pesquisa
+                            for msg in reversed(node_data["messages"]):
+                                if isinstance(msg, AIMessage):
+                                    dados_pesquisa = msg.content
+                                    break
+                            if dados_pesquisa:
+                                break
+                    
+                    # Exibe dados da pesquisa primeiro
+                    if dados_pesquisa:
+                        print(f"\n{'='*80}")
+                        print("DADOS DA PESQUISA UTILIZADOS NO GRÁFICO:")
+                        print('='*80)
+                        print(dados_pesquisa)
+                        print('='*80)
+                
+                # Exibe a resposta final do gráfico
+                if "graficos" in resultado and "messages" in resultado["graficos"]:
+                    node_data = resultado["graficos"]
+                    ultima_msg = node_data["messages"][-1]
+                    if hasattr(ultima_msg, 'content'):
+                        print(f"\n{'='*80}")
+                        print("GRÁFICO GERADO:")
+                        print('='*80)
+                        print(ultima_msg.content)
+                        print('='*80)
+                # Se não tem gráfico, exibe apenas a resposta do agente especializado
+                elif not tem_grafico:
+                    for node_name, node_data in resultado.items():
+                        if "messages" in node_data:
+                            ultima_msg = node_data["messages"][-1]
+                            if hasattr(ultima_msg, 'content'):
+                                print(f"\n{'='*80}")
+                                print("RESPOSTA FINAL:")
+                                print('='*80)
+                                print(ultima_msg.content)
+                                print('='*80)
             
             print()
             
